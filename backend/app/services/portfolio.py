@@ -108,7 +108,7 @@ async def get_or_create_conversation(
     if conversation_id:
         result = await db.execute(
             select(Conversation).where(
-                Conversation.id == portfolio_id,
+                Conversation.id == conversation_id,
                 Conversation.portfolio_id == portfolio_id,
             )
         )
