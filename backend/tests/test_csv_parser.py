@@ -62,3 +62,56 @@ def test_asset_type_inference():
     crypto_csv = b"symbol,name,quantity,average cost,last price,equity\nBTC,Bitcoin,0.5,30000,45000,22500\n"
     holdings = parse_robinhood_csv(crypto_csv)
     assert holdings[0]["asset_type"] == "crypto"
+
+
+def test_derived_fields_filled_per_row():
+    """Rows missing equity must get value derived from qty*price even when
+    other rows have it (regression: was only computed if whole column empty)."""
+    csv = (
+        b"symbol,quantity,average cost,last price,equity\n"
+        b"AAPL,10,150.00,175.50,1755.00\n"
+        b"MSFT,5,280.00,415.00,\n"
+    )
+    holdings = parse_robinhood_csv(csv)
+    msft = next(h for h in holdings if h["ticker"] == "MSFT")
+    assert msft["current_value"] == pytest.approx(5 * 415.00)
+    assert msft["total_return"] == pytest.approx(5 * 415.00 - 5 * 280.00)
+
+
+def test_zero_cost_basis_no_division_error():
+    csv = b"symbol,quantity,average cost,last price,equity\nFREE,10,0,5.00,50.00\n"
+    holdings = parse_robinhood_csv(csv)
+    assert holdings[0]["return_pct"] is None  # undefined, not inf/NaN
+
+
+def test_compute_summary_ignores_missing_cost_basis():
+    """Holdings without average_cost must not count as pure profit."""
+    from types import SimpleNamespace
+    from app.services.portfolio import compute_summary
+
+    holdings = [
+        SimpleNamespace(ticker="AAPL", quantity=10, average_cost=150.0,
+                        current_value=1755.0, total_return=None, sector="Technology"),
+        SimpleNamespace(ticker="BTC", quantity=0.5, average_cost=None,
+                        current_value=50000.0, total_return=None, sector="Crypto"),
+    ]
+    s = compute_summary(holdings)
+    assert s.total_value == pytest.approx(51755.0)
+    assert s.total_cost == pytest.approx(1500.0)
+    assert s.total_return == pytest.approx(255.0)       # AAPL only
+    assert s.total_return_pct == pytest.approx(17.0)    # not ~3350%
+
+
+def test_compute_summary_survives_nan_values():
+    from types import SimpleNamespace
+    from app.services.portfolio import compute_summary
+
+    holdings = [
+        SimpleNamespace(ticker="GOOD", quantity=1, average_cost=100.0,
+                        current_value=110.0, total_return=None, sector=None),
+        SimpleNamespace(ticker="BAD", quantity=1, average_cost=float("nan"),
+                        current_value=float("nan"), total_return=None, sector=None),
+    ]
+    s = compute_summary(holdings)
+    assert s.total_value == pytest.approx(110.0)
+    assert s.total_return == pytest.approx(10.0)

@@ -37,7 +37,6 @@ class PortfolioOut(BaseModel):
     broker: str
     imported_at: datetime
     created_at: datetime
-    holdings: list[HoldingOut] = []
 
     class Config:
         from_attributes = True
@@ -54,9 +53,17 @@ class PortfolioSummary(BaseModel):
     sectors: dict[str, float]        # sector -> % allocation
 
 
+class Insight(BaseModel):
+    """A single auto-generated observation about the portfolio."""
+    severity: str   # "warning" | "info" | "positive"
+    title: str
+    detail: str
+
+
 class PortfolioWithSummary(BaseModel):
     portfolio: PortfolioOut
     summary: PortfolioSummary
+    insights: list[Insight] = []
 
 
 # ─── Chat ────────────────────────────────────────────────────────────────────
@@ -102,3 +109,16 @@ class PricePoint(BaseModel):
 class TickerHistory(BaseModel):
     ticker: str
     prices: list[PricePoint]
+
+
+# ─── Portfolio value history ──────────────────────────────────────────────────
+
+class ValuePoint(BaseModel):
+    date: str
+    value: float
+
+
+class PortfolioValueHistory(BaseModel):
+    days: int
+    points: list[ValuePoint]
+    approximate: bool = True   # assumes current holdings/quantities held throughout

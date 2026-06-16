@@ -68,9 +68,27 @@ export interface PortfolioSummary {
   sectors: Record<string, number>
 }
 
+export interface Insight {
+  severity: "warning" | "info" | "positive"
+  title: string
+  detail: string
+}
+
 export interface PortfolioResponse {
   portfolio: { id: string; name: string; broker: string; imported_at: string }
   summary: PortfolioSummary
+  insights: Insight[]
+}
+
+export interface ValuePoint {
+  date: string
+  value: number
+}
+
+export interface PortfolioValueHistory {
+  days: number
+  points: ValuePoint[]
+  approximate: boolean
 }
 
 export interface Message {
@@ -123,6 +141,9 @@ export const api = {
 
   getPriceHistory: (ticker: string, days = 90) =>
     apiFetch<{ ticker: string; prices: PricePoint[] }>(`/portfolio/me/history/${ticker}?days=${days}`),
+
+  getPortfolioHistory: (days = 90) =>
+    apiFetch<PortfolioValueHistory>(`/portfolio/me/history?days=${days}`),
 
   sendMessage: (message: string, conversation_id?: string) =>
     apiFetch<ChatResponse>("/chat", {

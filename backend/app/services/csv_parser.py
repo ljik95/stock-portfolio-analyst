@@ -55,7 +55,7 @@ def parse_robinhood_csv(content: bytes) -> list[dict[str, Any]]:
     """
     try:
         text = content.decode("utf-8", errors="replace")
-        df = pd.read_csv(io.StringIO(text))
+        df = pd.read_csv(io.StringIO(text), on_bad_lines="skip")
     except Exception as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -80,21 +80,27 @@ def parse_robinhood_csv(content: bytes) -> list[dict[str, Any]]:
     # Ensure required numeric columns exist; fill with None if absent
     for col in ("quantity", "average_cost", "current_price", "current_value", "total_return", "return_pct"):
         if col not in df.columns:
-            df[col] = None
+            df[col] = float("nan")  # float dtype, so derived-field arithmetic below works
         else:
             df[col] = pd.to_numeric(df[col].astype(str).str.replace(r"[$,%]", "", regex=True), errors="coerce")
 
-    # Compute derived fields if missing
-    if df["current_value"].isna().all() and not df["quantity"].isna().all():
-        df["current_value"] = df["quantity"] * df["current_price"]
+    # Drop rows with null or zero quantity — closed/expired positions and
+    # summary rows that slipped through. quantity is NOT NULL in the DB.
+    df = df[df["quantity"].notna() & (df["quantity"] > 0)]
 
-    if df["total_return"].isna().all() and not df["average_cost"].isna().all():
-        cost_basis = df["quantity"] * df["average_cost"]
-        df["total_return"] = df["current_value"] - cost_basis
+    # Compute derived fields per row wherever they're missing. (Doing this
+    # only when the entire column is empty leaves partially-missing rows as
+    # NaN, which then count as $0 in portfolio totals.)
+    df["current_value"] = df["current_value"].fillna(df["quantity"] * df["current_price"])
 
-    if df["return_pct"].isna().all() and not df["average_cost"].isna().all():
-        cost_basis = df["quantity"] * df["average_cost"]
-        df["return_pct"] = ((df["current_value"] - cost_basis) / cost_basis * 100).round(4)
+    # cost basis of 0 → leave derived returns as NaN rather than dividing by zero
+    cost_basis = (df["quantity"] * df["average_cost"])
+    cost_basis = cost_basis.where(cost_basis != 0)
+
+    df["total_return"] = df["total_return"].fillna(df["current_value"] - cost_basis)
+    df["return_pct"]   = df["return_pct"].fillna(
+        ((df["current_value"] - cost_basis) / cost_basis * 100).round(4)
+    )
 
     holdings = []
     for _, row in df.iterrows():

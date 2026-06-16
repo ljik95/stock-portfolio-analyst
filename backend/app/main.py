@@ -21,6 +21,9 @@ app = FastAPI(
 )
 
 # ─── Security middleware ──────────────────────────────────────────────────────
+# NOTE: Starlette builds middleware in reverse-registration order.
+# add_middleware(CORS) first → CORS is outermost user middleware,
+# so CORS headers are present on ALL responses including errors.
 
 app.add_middleware(
     CORSMiddleware,
@@ -40,11 +43,20 @@ if settings.environment == "production":
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
     start = time.time()
-    response = await call_next(request)
+    try:
+        response = await call_next(request)
+    except Exception as exc:
+        # Catch anything that escaped the exception handler so CORS middleware
+        # (which is outside this one) still gets to attach its headers.
+        logger.error(f"Unhandled exception: {exc}", exc_info=True)
+        response = JSONResponse(
+            status_code=500,
+            content={"detail": "An unexpected error occurred. Please try again."},
+        )
     duration = round((time.time() - start) * 1000, 1)
     logger.info(f"{request.method} {request.url.path} → {response.status_code} ({duration}ms)")
-    # Security: never expose server info
-    response.headers.pop("server", None)
+    if "server" in response.headers:
+        del response.headers["server"]
     return response
 
 

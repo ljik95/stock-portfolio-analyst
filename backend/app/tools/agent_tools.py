@@ -52,10 +52,27 @@ async def tool_calculate_portfolio_metrics(holdings_json: str) -> str:
     except Exception:
         return json.dumps({"error": "Invalid holdings JSON"})
 
-    total_value  = sum(h.get("current_value") or 0 for h in holdings)
-    total_cost   = sum((h.get("quantity") or 0) * (h.get("average_cost") or 0) for h in holdings)
-    total_return = total_value - total_cost
-    return_pct   = (total_return / total_cost * 100) if total_cost else 0
+    total_value = sum(h.get("current_value") or 0 for h in holdings)
+
+    # Mirror compute_summary in app/services/portfolio.py: only count cost
+    # basis (and the corresponding return) for holdings with a known
+    # quantity AND average_cost. Otherwise positions with a missing average
+    # cost (e.g. crypto imported without a cost basis) get treated as if
+    # their entire current value were profit, wildly inflating total_return
+    # and return_pct relative to the dashboard's numbers.
+    total_cost   = 0.0
+    total_return = 0.0
+    for h in holdings:
+        qty, avg = h.get("quantity") or 0, h.get("average_cost") or 0
+        if qty and avg:
+            cost = qty * avg
+            total_cost += cost
+            if h.get("current_value") is not None:
+                total_return += (h.get("current_value") or 0) - cost
+            elif h.get("total_return") is not None:
+                total_return += h["total_return"]
+
+    return_pct = (total_return / total_cost * 100) if total_cost else 0
 
     # Sector breakdown
     sector_values: dict[str, float] = {}

@@ -3,11 +3,12 @@ Portfolio service — orchestrates CSV parsing, enrichment, DB persistence, and 
 """
 
 import json
+import math
 from uuid import UUID
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, delete
 from app.models.db_models import Portfolio, Holding, Conversation, Message
-from app.models.schemas import PortfolioSummary
+from app.models.schemas import PortfolioSummary, Insight
 from app.services.csv_parser import parse_robinhood_csv
 from app.services.market_data import enrich_holdings
 
@@ -54,19 +55,42 @@ async def get_holdings(db: AsyncSession, portfolio_id: UUID) -> list[Holding]:
 
 # ─── Summary computation ──────────────────────────────────────────────────────
 
+def _num(value) -> float:
+    """Coerce to a finite float; NaN/inf/None (e.g. bad legacy rows) → 0."""
+    try:
+        f = float(value)
+        return f if math.isfinite(f) else 0.0
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def compute_summary(holdings: list[Holding]) -> PortfolioSummary:
-    total_value  = sum(h.current_value or 0 for h in holdings)
-    total_cost   = sum((h.quantity or 0) * (h.average_cost or 0) for h in holdings)
-    total_return = total_value - total_cost
-    return_pct   = (total_return / total_cost * 100) if total_cost else 0
+    total_value = sum(_num(h.current_value) for h in holdings)
+
+    # Return math only covers holdings with a known cost basis. Computing
+    # total_value - total_cost across everything counts positions with a
+    # missing average_cost as pure profit and inflates the return figures.
+    total_cost   = 0.0
+    total_return = 0.0
+    for h in holdings:
+        qty, avg = _num(h.quantity), _num(h.average_cost)
+        if qty and avg:
+            cost = qty * avg
+            total_cost += cost
+            if h.current_value is not None:
+                total_return += _num(h.current_value) - cost
+            elif h.total_return is not None:
+                total_return += _num(h.total_return)
+
+    return_pct = (total_return / total_cost * 100) if total_cost else 0
 
     sector_values: dict[str, float] = {}
     for h in holdings:
         s = h.sector or "Unknown"
-        sector_values[s] = sector_values.get(s, 0) + (h.current_value or 0)
+        sector_values[s] = sector_values.get(s, 0) + _num(h.current_value)
     sector_pct = {s: round(v / total_value * 100, 2) for s, v in sector_values.items()} if total_value else {}
 
-    top = max(holdings, key=lambda h: h.current_value or 0, default=None)
+    top = max(holdings, key=lambda h: _num(h.current_value), default=None)
 
     return PortfolioSummary(
         total_value=round(total_value, 2),
@@ -77,6 +101,130 @@ def compute_summary(holdings: list[Holding]) -> PortfolioSummary:
         top_holding=top.ticker if top else None,
         sectors=sector_pct,
     )
+
+
+# ─── Insights ─────────────────────────────────────────────────────────────────
+
+CONCENTRATION_THRESHOLD = 25.0   # % of portfolio in a single holding
+SECTOR_THRESHOLD        = 40.0   # % of portfolio in a single sector
+MIN_HOLDINGS_FOR_DIVERSIFICATION_CHECK = 4
+MIN_SECTORS_FOR_DIVERSIFICATION        = 3
+
+
+def compute_insights(holdings: list[Holding], summary: PortfolioSummary) -> list[Insight]:
+    """
+    Generate plain-language observations about the portfolio. These are
+    rule-based (not LLM-generated) so they're cheap, deterministic, and
+    always in sync with the numbers shown on the dashboard.
+    """
+    insights: list[Insight] = []
+    total_value = summary.total_value
+
+    if not holdings or total_value <= 0:
+        return insights
+
+    # ── Single-position concentration ──────────────────────────────────────
+    by_value = sorted(holdings, key=lambda h: _num(h.current_value), reverse=True)
+    top = by_value[0]
+    top_pct = _num(top.current_value) / total_value * 100
+    if top_pct >= CONCENTRATION_THRESHOLD:
+        insights.append(Insight(
+            severity="warning",
+            title=f"{top.ticker} is {top_pct:.0f}% of your portfolio",
+            detail=(
+                f"A single position this large means {top.ticker}'s price moves have an "
+                f"outsized effect on your total value. Consider whether this concentration "
+                f"is intentional."
+            ),
+        ))
+
+    # ── Sector concentration ────────────────────────────────────────────────
+    if summary.sectors:
+        sector, pct = max(summary.sectors.items(), key=lambda kv: kv[1])
+        if pct >= SECTOR_THRESHOLD and sector != "Unknown":
+            insights.append(Insight(
+                severity="warning",
+                title=f"{sector} makes up {pct:.0f}% of your portfolio",
+                detail=(
+                    f"Heavy exposure to one sector means sector-wide news or downturns "
+                    f"affect a large share of your holdings at once."
+                ),
+            ))
+
+    # ── Diversification ─────────────────────────────────────────────────────
+    if (
+        summary.num_holdings >= MIN_HOLDINGS_FOR_DIVERSIFICATION_CHECK
+        and len(summary.sectors) < MIN_SECTORS_FOR_DIVERSIFICATION
+    ):
+        insights.append(Insight(
+            severity="info",
+            title=f"Your portfolio spans only {len(summary.sectors)} sector(s)",
+            detail=(
+                f"With {summary.num_holdings} holdings concentrated in so few sectors, "
+                f"a downturn in one of them would broadly affect your portfolio."
+            ),
+        ))
+
+    # ── Best / worst performers ─────────────────────────────────────────────
+    with_returns = [h for h in holdings if h.return_pct is not None]
+    if with_returns:
+        best  = max(with_returns, key=lambda h: _num(h.return_pct))
+        worst = min(with_returns, key=lambda h: _num(h.return_pct))
+
+        if _num(best.return_pct) > 0:
+            insights.append(Insight(
+                severity="positive",
+                title=f"{best.ticker} is your top performer, up {_num(best.return_pct):.1f}%",
+                detail=f"It's contributed {_fmt_money(_num(best.total_return))} to your total return.",
+            ))
+
+        if worst.ticker != best.ticker and _num(worst.return_pct) < 0:
+            insights.append(Insight(
+                severity="warning",
+                title=f"{worst.ticker} is down {_num(worst.return_pct):.1f}%",
+                detail=(
+                    f"It's your biggest drag on returns, at {_fmt_money(_num(worst.total_return))}. "
+                    f"Worth checking whether the original thesis still holds."
+                ),
+            ))
+
+    # ── Missing cost basis ──────────────────────────────────────────────────
+    missing_cost = [h.ticker for h in holdings if not _num(h.average_cost) and _num(h.quantity)]
+    if missing_cost:
+        names = ", ".join(missing_cost[:3]) + ("…" if len(missing_cost) > 3 else "")
+        insights.append(Insight(
+            severity="info",
+            title=f"{len(missing_cost)} holding(s) are missing a cost basis",
+            detail=(
+                f"{names} don't have an average cost on file, so they're excluded from "
+                f"your total return calculation. Returns shown may understate your real gains/losses."
+            ),
+        ))
+
+    # ── Overall return framing ──────────────────────────────────────────────
+    if summary.total_cost > 0:
+        if summary.total_return_pct >= 0:
+            insights.append(Insight(
+                severity="positive",
+                title=f"Portfolio is up {summary.total_return_pct:.1f}% overall",
+                detail=f"That's {_fmt_money(summary.total_return)} in unrealised gains across positions with a known cost basis.",
+            ))
+        else:
+            insights.append(Insight(
+                severity="warning",
+                title=f"Portfolio is down {abs(summary.total_return_pct):.1f}% overall",
+                detail=f"That's {_fmt_money(summary.total_return)} in unrealised losses across positions with a known cost basis.",
+            ))
+
+    # Warnings first, then info, then positive
+    order = {"warning": 0, "info": 1, "positive": 2}
+    insights.sort(key=lambda i: order.get(i.severity, 3))
+    return insights
+
+
+def _fmt_money(value: float) -> str:
+    sign = "-" if value < 0 else ""
+    return f"{sign}${abs(value):,.2f}"
 
 
 def holdings_as_dict(holdings: list[Holding]) -> list[dict]:

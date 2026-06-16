@@ -7,10 +7,12 @@ import { UploadZone }    from "@/components/dashboard/UploadZone"
 import { SummaryCards }  from "@/components/dashboard/SummaryCards"
 import { SectorChart }   from "@/components/dashboard/SectorChart"
 import { HoldingsTable } from "@/components/dashboard/HoldingsTable"
+import { InsightsPanel } from "@/components/dashboard/InsightsPanel"
+import { PortfolioValueChart } from "@/components/dashboard/PortfolioValueChart"
 import { ChatPanel }     from "@/components/chat/ChatPanel"
 
 export default function Home() {
-  const { state, summary, holdings, error, importCSV, reload, reset } = usePortfolio()
+  const { state, summary, holdings, insights, history, error, importCSV, reload, reset } = usePortfolio()
   const [showChat, setShowChat] = useState(false)
 
   if (state === "idle" || state === "error") {
@@ -78,10 +80,12 @@ export default function Home() {
         {/* Summary stats */}
         {summary && <SummaryCards summary={summary} />}
 
-        {/* Two-column: charts + optional chat */}
+        {/* Trend + insights + optional chat */}
         <div className={`grid gap-6 ${showChat ? "grid-cols-1 lg:grid-cols-2" : "grid-cols-1"}`}>
           <div className="space-y-6">
+            <PortfolioValueChart history={history} />
             {summary && <SectorChart sectors={summary.sectors} />}
+            <InsightsPanel insights={insights} />
           </div>
           {showChat && <ChatPanel />}
         </div>

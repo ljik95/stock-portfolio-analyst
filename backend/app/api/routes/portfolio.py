@@ -10,9 +10,9 @@ from app.core.security import (
     get_client_ip,
     validate_csv_size,
 )
-from app.models.schemas import PortfolioOut, PortfolioWithSummary, HoldingOut
+from app.models.schemas import PortfolioOut, PortfolioWithSummary, HoldingOut, PortfolioValueHistory
 from app.services import portfolio as portfolio_svc
-from app.services.market_data import get_price_history
+from app.services.market_data import get_price_history, get_portfolio_value_history
 
 router = APIRouter(prefix="/portfolio", tags=["portfolio"])
 
@@ -55,10 +55,12 @@ async def get_portfolio(
 
     holdings = await portfolio_svc.get_holdings(db, UUID(portfolio_id))
     summary  = portfolio_svc.compute_summary(holdings)
+    insights = portfolio_svc.compute_insights(holdings, summary)
 
     return PortfolioWithSummary(
         portfolio=PortfolioOut.model_validate(portfolio),
         summary=summary,
+        insights=insights,
     )
 
 
@@ -69,6 +71,23 @@ async def list_holdings(
 ):
     holdings = await portfolio_svc.get_holdings(db, UUID(portfolio_id))
     return [HoldingOut.model_validate(h) for h in holdings]
+
+
+@router.get("/me/history", response_model=PortfolioValueHistory, summary="Get approximate portfolio value over time")
+async def get_portfolio_history(
+    days: int = 90,
+    portfolio_id: str = Depends(get_current_portfolio_id),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Returns an approximate total-portfolio-value time series, computed by
+    applying *current* holding quantities to historical prices. Useful as a
+    trend line, not a record of realised performance.
+    """
+    days = min(max(days, 7), 365)
+    holdings = await portfolio_svc.get_holdings(db, UUID(portfolio_id))
+    points   = await get_portfolio_value_history(portfolio_svc.holdings_as_dict(holdings), period_days=days)
+    return PortfolioValueHistory(days=days, points=points, approximate=True)
 
 
 @router.get("/me/history/{ticker}", summary="Get price history for a holding")
