@@ -115,3 +115,43 @@ def test_compute_summary_survives_nan_values():
     s = compute_summary(holdings)
     assert s.total_value == pytest.approx(110.0)
     assert s.total_return == pytest.approx(10.0)
+
+
+def test_compute_summary_uses_csv_total_return_as_fallback():
+    """When avg_cost is missing but CSV provided a total_return, use it.
+    This covers Robinhood exports that omit the Average Cost column."""
+    from types import SimpleNamespace
+    from app.services.portfolio import compute_summary
+
+    holdings = [
+        # Has cost basis — contributes normally
+        SimpleNamespace(ticker="AAPL", quantity=10, average_cost=150.0,
+                        current_value=1755.0, total_return=None, sector="Technology"),
+        # No cost basis, but CSV total_return is available
+        SimpleNamespace(ticker="BTC", quantity=0.5, average_cost=None,
+                        current_value=50000.0, total_return=500.0, sector="Crypto"),
+    ]
+    s = compute_summary(holdings)
+    # total_return = AAPL's 255 + BTC's CSV 500 = 755
+    assert s.total_return == pytest.approx(755.0)
+    # total_cost only comes from AAPL (BTC has no cost basis)
+    assert s.total_cost == pytest.approx(1500.0)
+    # return_pct uses total_cost since it's available
+    assert s.total_return_pct == pytest.approx(755.0 / 1500.0 * 100)
+
+
+def test_compute_summary_infers_pct_when_no_cost_basis():
+    """When ALL holdings lack avg_cost but have CSV total_return, infer return_pct
+    from (total_value - total_return) as an implied cost."""
+    from types import SimpleNamespace
+    from app.services.portfolio import compute_summary
+
+    holdings = [
+        SimpleNamespace(ticker="X", quantity=1, average_cost=None,
+                        current_value=110.0, total_return=10.0, sector=None),
+    ]
+    s = compute_summary(holdings)
+    assert s.total_return == pytest.approx(10.0)
+    assert s.total_cost == pytest.approx(0.0)       # no cost basis data
+    # implied cost = 110 - 10 = 100, so 10/100 * 100 = 10%
+    assert s.total_return_pct == pytest.approx(10.0)

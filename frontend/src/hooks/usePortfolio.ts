@@ -1,7 +1,7 @@
 "use client"
 
 import { useState, useEffect, useCallback } from "react"
-import { api, getToken, setToken, clearToken, type Holding, type PortfolioSummary, type Insight, type ValuePoint, type ApiError } from "@/lib/api"
+import { api, getToken, setToken, clearToken, type Holding, type PortfolioSummary, type Insight, type ValuePoint } from "@/lib/api"
 
 export type AppState = "idle" | "loading" | "ready" | "error"
 
