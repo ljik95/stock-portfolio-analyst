@@ -67,7 +67,7 @@ export function PortfolioValueChart({ history }: PortfolioValueChartProps) {
                 color: "#e8eaf0",
               }}
               labelStyle={{ color: "#8892a4" }}
-              formatter={(value: number) => [formatCurrency(value), "Value"]}
+              formatter={(value) => [formatCurrency(value as number), "Value"]}
             />
             <Area
               type="monotone"

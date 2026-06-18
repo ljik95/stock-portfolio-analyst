@@ -44,7 +44,7 @@ export function SectorChart({ sectors }: SectorChartProps) {
                   fontSize: "12px",
                   color: "#e8eaf0",
                 }}
-                formatter={(value: number) => [`${value.toFixed(1)}%`, ""]}
+                formatter={(value) => [`${(value as number).toFixed(1)}%`, ""]}
               />
             </PieChart>
           </ResponsiveContainer>
