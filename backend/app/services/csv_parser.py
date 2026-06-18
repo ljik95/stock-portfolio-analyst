@@ -6,6 +6,7 @@ Columns vary slightly by export date; this handles both known formats.
 """
 
 import io
+from datetime import date
 import pandas as pd
 from typing import Any
 from fastapi import HTTPException, status
@@ -25,10 +26,15 @@ COLUMN_MAP = {
     "quantity":          "quantity",
     "shares held":       "quantity",
 
-    # average cost
-    "average cost":      "average_cost",
-    "average buy price": "average_cost",
-    "avg cost":          "average_cost",
+    # average cost (many Robinhood / broker export variants)
+    "average cost":           "average_cost",
+    "average buy price":      "average_cost",
+    "avg cost":               "average_cost",
+    "avg. cost":              "average_cost",
+    "average cost basis":     "average_cost",
+    "cost per share":         "average_cost",
+    "unit cost":              "average_cost",
+    "price paid":             "average_cost",
 
     # current price
     "last price":        "current_price",
@@ -45,6 +51,14 @@ COLUMN_MAP = {
     "return":            "total_return",
     "percent return":    "return_pct",
     "return %":          "return_pct",
+
+    # acquisition date (present in some export formats)
+    "date acquired":     "purchased_at",
+    "acquisition date":  "purchased_at",
+    "date":              "purchased_at",
+    "purchase date":     "purchased_at",
+    "open date":         "purchased_at",
+    "created at":        "purchased_at",
 }
 
 
@@ -65,8 +79,12 @@ def parse_robinhood_csv(content: bytes) -> list[dict[str, Any]]:
     # Normalise column names: lowercase + strip whitespace
     df.columns = [c.lower().strip() for c in df.columns]
 
-    # Rename to canonical names
+    # Rename to canonical names, then drop duplicate column names that can
+    # arise when the CSV has both "Instrument" and "Symbol" (both map to
+    # "ticker"). Keep the first occurrence — for options, "Instrument" is
+    # the full OCC symbol (len > 5) which lets _infer_asset_type work.
     df.rename(columns=COLUMN_MAP, inplace=True)
+    df = df.loc[:, ~df.columns.duplicated(keep="first")]
 
     if "ticker" not in df.columns:
         raise HTTPException(
@@ -83,6 +101,12 @@ def parse_robinhood_csv(content: bytes) -> list[dict[str, Any]]:
             df[col] = float("nan")  # float dtype, so derived-field arithmetic below works
         else:
             df[col] = pd.to_numeric(df[col].astype(str).str.replace(r"[$,%]", "", regex=True), errors="coerce")
+
+    # Parse acquisition date if present; leave as NaT (→ None) if column missing or unparseable
+    if "purchased_at" not in df.columns:
+        df["purchased_at"] = pd.NaT
+    else:
+        df["purchased_at"] = pd.to_datetime(df["purchased_at"], errors="coerce")
 
     # Drop rows with null or zero quantity — closed/expired positions and
     # summary rows that slipped through. quantity is NOT NULL in the DB.
@@ -114,6 +138,7 @@ def parse_robinhood_csv(content: bytes) -> list[dict[str, Any]]:
             "total_return":  _safe_float(row.get("total_return")),
             "return_pct":    _safe_float(row.get("return_pct")),
             "asset_type":    _infer_asset_type(str(row["ticker"])),
+            "purchased_at":  _safe_date(row.get("purchased_at")),
         })
 
     if not holdings:
@@ -129,6 +154,15 @@ def _safe_float(value: Any) -> float | None:
     try:
         f = float(value)
         return None if pd.isna(f) else f
+    except (TypeError, ValueError):
+        return None
+
+
+def _safe_date(value: Any) -> date | None:
+    """Convert a pandas Timestamp / NaT / string to a Python date, or None."""
+    try:
+        ts = pd.Timestamp(value)
+        return None if pd.isna(ts) else ts.date()
     except (TypeError, ValueError):
         return None
 

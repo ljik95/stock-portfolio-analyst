@@ -67,9 +67,11 @@ def _num(value) -> float:
 def compute_summary(holdings: list[Holding]) -> PortfolioSummary:
     total_value = sum(_num(h.current_value) for h in holdings)
 
-    # Return math only covers holdings with a known cost basis. Computing
-    # total_value - total_cost across everything counts positions with a
-    # missing average_cost as pure profit and inflates the return figures.
+    # Prefer computing total_return from cost basis (qty × avg_cost) to avoid
+    # inflating returns. For holdings where average_cost IS available, use
+    # current_value - cost. For holdings where it is NOT (some Robinhood
+    # export formats omit it), fall back to the h.total_return the CSV
+    # already computed and stored.
     total_cost   = 0.0
     total_return = 0.0
     for h in holdings:
@@ -81,8 +83,19 @@ def compute_summary(holdings: list[Holding]) -> PortfolioSummary:
                 total_return += _num(h.current_value) - cost
             elif h.total_return is not None:
                 total_return += _num(h.total_return)
+        elif h.total_return is not None:
+            # No cost basis — use the pre-computed return from the CSV directly.
+            total_return += _num(h.total_return)
 
-    return_pct = (total_return / total_cost * 100) if total_cost else 0
+    if total_cost:
+        return_pct = total_return / total_cost * 100
+    elif total_value and total_return:
+        # Infer cost as (current_value − total_return) so return_pct is still
+        # meaningful when the CSV provided dollar returns but no average cost.
+        implied_cost = total_value - total_return
+        return_pct = (total_return / implied_cost * 100) if implied_cost > 0 else 0
+    else:
+        return_pct = 0
 
     sector_values: dict[str, float] = {}
     for h in holdings:
@@ -241,6 +254,7 @@ def holdings_as_dict(holdings: list[Holding]) -> list[dict]:
             "return_pct":    float(h.return_pct) if h.return_pct else None,
             "sector":        h.sector,
             "asset_type":    h.asset_type,
+            "purchased_at":  h.purchased_at.isoformat() if h.purchased_at else None,
         }
         for h in holdings
     ]

@@ -2,31 +2,45 @@
 
 import { useState } from "react"
 import { ArrowUpDown, TrendingUp, TrendingDown } from "lucide-react"
-import { formatCurrency, formatPct, formatNumber, isPositive, shortName, cn } from "@/lib/utils"
+import { formatCurrency, formatPct, formatNumber, formatDate, isPositive, shortName, cn } from "@/lib/utils"
 import type { Holding } from "@/lib/api"
 
-type SortKey = "ticker" | "current_value" | "return_pct" | "quantity"
+type SortKey = "purchased_at" | "ticker" | "current_value" | "return_pct" | "quantity"
 
 interface HoldingsTableProps {
   holdings: Holding[]
   onSelectTicker?: (ticker: string) => void
 }
 
+/** Compare two values; nulls always sort last regardless of direction. */
+function compareNullLast(av: string | number | null, bv: string | number | null, asc: boolean): number {
+  if (av == null && bv == null) return 0
+  if (av == null) return 1   // a is null → goes after b
+  if (bv == null) return -1  // b is null → a goes before b
+  if (asc) return av < bv ? -1 : av > bv ? 1 : 0
+  return av > bv ? -1 : av < bv ? 1 : 0
+}
+
 export function HoldingsTable({ holdings, onSelectTicker }: HoldingsTableProps) {
-  const [sortKey,  setSortKey]  = useState<SortKey>("current_value")
-  const [sortAsc,  setSortAsc]  = useState(false)
+  // Show the Purchased column only when at least one holding has a date.
+  // Standard Robinhood Holdings exports don't include acquisition dates,
+  // so this avoids an always-empty column full of dashes.
+  const hasDates = holdings.some(h => h.purchased_at != null)
+
+  // Default sort: chronological when dates exist; largest position first otherwise.
+  const [sortKey, setSortKey] = useState<SortKey>(hasDates ? "purchased_at" : "current_value")
+  const [sortAsc, setSortAsc] = useState(hasDates)
 
   const sorted = [...holdings].sort((a, b) => {
-    const av = a[sortKey] ?? -Infinity
-    const bv = b[sortKey] ?? -Infinity
-    return sortAsc
-      ? (av < bv ? -1 : av > bv ? 1 : 0)
-      : (av > bv ? -1 : av < bv ? 1 : 0)
+    const av = a[sortKey] as string | number | null
+    const bv = b[sortKey] as string | number | null
+    return compareNullLast(av, bv, sortAsc)
   })
 
   const handleSort = (key: SortKey) => {
     if (key === sortKey) setSortAsc(a => !a)
-    else { setSortKey(key); setSortAsc(false) }
+    // Date sorts ascending by default (oldest first); others descending
+    else { setSortKey(key); setSortAsc(key === "purchased_at" || key === "ticker") }
   }
 
   const ColHeader = ({ label, k }: { label: string; k: SortKey }) => (
@@ -52,6 +66,7 @@ export function HoldingsTable({ holdings, onSelectTicker }: HoldingsTableProps) 
           <thead>
             <tr className="px-5">
               <th className="pl-5 text-left text-xs font-semibold uppercase tracking-wider text-text-muted pb-3 pt-4">Ticker</th>
+              {hasDates && <ColHeader label="Purchased" k="purchased_at" />}
               <ColHeader label="Value"      k="current_value" />
               <ColHeader label="Qty"        k="quantity" />
               <ColHeader label="Return"     k="return_pct" />
@@ -74,6 +89,11 @@ export function HoldingsTable({ holdings, onSelectTicker }: HoldingsTableProps) 
                       <span className="text-xs text-text-muted truncate max-w-[140px]">{shortName(h.name, h.ticker)}</span>
                     </div>
                   </td>
+                  {hasDates && (
+                    <td className="py-3.5 text-xs text-text-secondary font-mono whitespace-nowrap">
+                      {formatDate(h.purchased_at)}
+                    </td>
+                  )}
                   <td className="py-3.5">
                     <span className="font-mono text-sm">{formatCurrency(h.current_value)}</span>
                   </td>

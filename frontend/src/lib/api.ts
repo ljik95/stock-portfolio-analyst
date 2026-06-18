@@ -56,6 +56,7 @@ export interface Holding {
   return_pct: number | null
   sector: string | null
   asset_type: string
+  purchased_at: string | null   // ISO date string, e.g. "2024-03-15"
 }
 
 export interface PortfolioSummary {

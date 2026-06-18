@@ -1,6 +1,6 @@
 import uuid
-from datetime import datetime
-from sqlalchemy import String, Numeric, BigInteger, Text, DateTime, ForeignKey, JSON
+from datetime import datetime, date
+from sqlalchemy import String, Numeric, BigInteger, Text, DateTime, Date, ForeignKey, JSON
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.dialects.postgresql import UUID
 from app.db.database import Base
@@ -35,6 +35,7 @@ class Holding(Base):
     return_pct: Mapped[float | None] = mapped_column(Numeric(8, 4))
     sector: Mapped[str | None] = mapped_column(String(100))
     asset_type: Mapped[str] = mapped_column(String(50), default="stock")
+    purchased_at: Mapped[date | None] = mapped_column(Date, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
 
     portfolio: Mapped["Portfolio"] = relationship("Portfolio", back_populates="holdings")

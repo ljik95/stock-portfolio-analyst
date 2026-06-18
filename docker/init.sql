@@ -35,6 +35,7 @@ CREATE TABLE IF NOT EXISTS holdings (
     return_pct       NUMERIC(8, 4),
     sector           VARCHAR(100),
     asset_type       VARCHAR(50) DEFAULT 'stock', -- stock, etf, crypto, option
+    purchased_at     DATE,                        -- acquisition date from CSV (nullable)
     updated_at       TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 

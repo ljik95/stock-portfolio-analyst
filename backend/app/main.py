@@ -20,25 +20,9 @@ app = FastAPI(
     redoc_url="/redoc" if settings.environment == "development" else None,
 )
 
-# ─── Security middleware ──────────────────────────────────────────────────────
-# NOTE: Starlette builds middleware in reverse-registration order.
-# add_middleware(CORS) first → CORS is outermost user middleware,
-# so CORS headers are present on ALL responses including errors.
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=settings.cors_origins,
-    allow_credentials=True,
-    allow_methods=["GET", "POST", "DELETE"],
-    allow_headers=["Authorization", "Content-Type"],
-)
-
-# Only allow requests from known hosts in production
-if settings.environment == "production":
-    app.add_middleware(TrustedHostMiddleware, allowed_hosts=["your-domain.com", "*.railway.app"])
-
-
-# ─── Request logging ──────────────────────────────────────────────────────────
+# ─── Request logging ─────────────────────────────────────────────────────────
+# Registered FIRST so it ends up innermost — CORS (registered last) wraps it
+# and will attach its headers to every response, including error ones.
 
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
@@ -46,8 +30,6 @@ async def log_requests(request: Request, call_next):
     try:
         response = await call_next(request)
     except Exception as exc:
-        # Catch anything that escaped the exception handler so CORS middleware
-        # (which is outside this one) still gets to attach its headers.
         logger.error(f"Unhandled exception: {exc}", exc_info=True)
         response = JSONResponse(
             status_code=500,
@@ -58,6 +40,24 @@ async def log_requests(request: Request, call_next):
     if "server" in response.headers:
         del response.headers["server"]
     return response
+
+
+# ─── Security middleware ──────────────────────────────────────────────────────
+# NOTE: Starlette applies middleware in reverse-registration order — the LAST
+# call to add_middleware becomes the outermost layer. Register CORS last so it
+# wraps log_requests and adds its headers to ALL responses, including errors.
+
+# Only allow requests from known hosts in production
+if settings.environment == "production":
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=["your-domain.com", "*.railway.app"])
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.cors_origins,
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type"],
+)
 
 
 # ─── Global error handler ─────────────────────────────────────────────────────

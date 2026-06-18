@@ -107,14 +107,16 @@ async def get_portfolio_value_history(
     period_days: int = 90,
 ) -> list[dict[str, Any]]:
     """
-    Approximate total portfolio value for each of the last `period_days`.
+    Approximate total portfolio value for each trading day in the last
+    `period_days`, computed by weighting each holding's price history by its
+    *current* quantity (we don't store historical transactions).
 
-    This is a simplification: it assumes *today's* quantities were held for
-    the whole window (we don't store historical transactions), so it shows
-    "what your current holdings would be worth over time", not a true
-    realised history. Options are excluded from the price series (no
-    historical OCC pricing via yfinance) and instead added back as a flat
-    offset using their current value.
+    Uses the proven single-ticker get_price_history path for each holding
+    (concurrent) rather than a batch multi-ticker download, which has
+    inconsistent column-naming behaviour across yfinance versions.
+
+    Options are excluded from the live series (OCC symbols aren't quotable via
+    yfinance); their current_value is added as a flat constant on every date.
     """
     quotable = [h for h in holdings if h.get("asset_type") != "option" and h.get("quantity")]
     option_offset = sum(
@@ -125,47 +127,48 @@ async def get_portfolio_value_history(
         return []
 
     yahoo_map = {h["ticker"]: _yahoo_symbol(h) for h in quotable}
-    symbols   = sorted(set(yahoo_map.values()))
 
-    loop = asyncio.get_event_loop()
-    close = await loop.run_in_executor(None, _fetch_history_multi_sync, symbols, period_days)
-    if close is None or close.empty:
+    # Fetch per-ticker close-price histories concurrently using the proven
+    # single-ticker path (get_price_history / _fetch_history_sync).
+    raw_histories: list[list[dict] | BaseException] = await asyncio.gather(
+        *[get_price_history(yahoo_map[h["ticker"]], period_days) for h in quotable],
+        return_exceptions=True,
+    )
+
+    # Build {ticker: {date_str: close_price}} lookup
+    price_map: dict[str, dict[str, float]] = {}
+    for h, hist in zip(quotable, raw_histories):
+        if isinstance(hist, BaseException) or not hist:
+            continue
+        price_map[h["ticker"]] = {row["date"]: row["close"] for row in hist}
+
+    if not price_map:
         return []
 
-    points = []
-    for idx, row in close.iterrows():
+    # Union of all dates across all tickers, sorted chronologically
+    all_dates = sorted({d for dates in price_map.values() for d in dates})
+
+    # Walk the timeline, forward-filling each ticker's last known price so
+    # that e.g. stocks on weekends use Friday's close.
+    points: list[dict[str, Any]] = []
+    last_price: dict[str, float] = {}
+
+    for d in all_dates:
+        for h in quotable:
+            t     = h["ticker"]
+            price = price_map.get(t, {}).get(d)
+            if price is not None and math.isfinite(price) and price > 0:
+                last_price[t] = price
+
         total = option_offset
         for h in quotable:
-            sym   = yahoo_map[h["ticker"]]
-            price = row.get(sym)
-            if price is not None and math.isfinite(price) and price > 0:
-                total += h["quantity"] * price
-        points.append({"date": idx.strftime("%Y-%m-%d"), "value": round(total, 2)})
+            filled = last_price.get(h["ticker"])
+            if filled is not None:
+                total += h["quantity"] * filled
+
+        points.append({"date": d, "value": round(total, 2)})
 
     return points
-
-
-def _fetch_history_multi_sync(symbols: list[str], period_days: int) -> "pd.DataFrame | None":
-    """Fetch daily close prices for multiple tickers, aligned by date and
-    forward-filled (so e.g. crypto's weekend prices carry stocks' last close
-    forward, keeping the total continuous)."""
-    end   = date.today()
-    start = end - timedelta(days=period_days)
-    try:
-        data = yf.download(" ".join(symbols), start=start, end=end, progress=False, auto_adjust=True)
-    except Exception:
-        return None
-
-    if data is None or data.empty or "Close" not in data:
-        return None
-
-    close = data["Close"]
-    if isinstance(close, pd.Series):
-        # Single-ticker download collapses to a flat Series — restore a
-        # DataFrame so downstream lookups by symbol name work uniformly.
-        close = close.to_frame(name=symbols[0])
-
-    return close.ffill().dropna(how="all")
 
 
 def _safe(value: Any) -> float:

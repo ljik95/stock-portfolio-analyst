@@ -1,6 +1,6 @@
 from pydantic import BaseModel, Field
 from uuid import UUID
-from datetime import datetime
+from datetime import datetime, date
 from typing import Optional
 
 
@@ -18,6 +18,7 @@ class HoldingOut(BaseModel):
     return_pct: Optional[float]
     sector: Optional[str]
     asset_type: str
+    purchased_at: Optional[date]
     updated_at: datetime
 
     class Config:

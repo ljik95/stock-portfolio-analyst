@@ -29,6 +29,13 @@ export function isPositive(value: number | null | undefined): boolean {
   return value != null && value >= 0
 }
 
+/** Format an ISO date string (e.g. "2024-03-15") as "Mar 15, 2024". */
+export function formatDate(value: string | null | undefined): string {
+  if (!value) return "—"
+  const [y, m, d] = value.split("-").map(Number)
+  return new Date(y, m - 1, d).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })
+}
+
 /** Truncate a ticker name for display. */
 export function shortName(name: string | null, ticker: string): string {
   if (!name) return ticker
