@@ -64,8 +64,28 @@ def _num(value) -> float:
         return 0.0
 
 
-def compute_summary(holdings: list[Holding]) -> PortfolioSummary:
-    total_value = sum(_num(h.current_value) for h in holdings)
+def compute_summary(
+    holdings: list[Holding],
+    live_prices: dict[str, float] | None = None,
+) -> PortfolioSummary:
+    """
+    Compute portfolio summary.
+
+    If `live_prices` is supplied (ticker → current price in USD) it takes
+    precedence over the stored `current_value` for non-option holdings so
+    the dashboard always reflects today's market value rather than the
+    price snapshot taken at CSV-import time.
+    """
+
+    def _cv(h: Holding) -> float:
+        """Current value for a holding, preferring live price when available."""
+        if live_prices is not None and h.asset_type != "option":
+            price = live_prices.get(h.ticker)
+            if price is not None:
+                return _num(h.quantity) * price
+        return _num(h.current_value)
+
+    total_value = sum(_cv(h) for h in holdings)
 
     # Prefer computing total_return from cost basis (qty × avg_cost) to avoid
     # inflating returns. For holdings where average_cost IS available, use
@@ -76,11 +96,14 @@ def compute_summary(holdings: list[Holding]) -> PortfolioSummary:
     total_return = 0.0
     for h in holdings:
         qty, avg = _num(h.quantity), _num(h.average_cost)
+        has_live = live_prices is not None and h.asset_type != "option" and h.ticker in live_prices
+        cv_known = has_live or h.current_value is not None
+        cv = _cv(h)
         if qty and avg:
             cost = qty * avg
             total_cost += cost
-            if h.current_value is not None:
-                total_return += _num(h.current_value) - cost
+            if cv_known:
+                total_return += cv - cost
             elif h.total_return is not None:
                 total_return += _num(h.total_return)
         elif h.total_return is not None:
@@ -100,10 +123,10 @@ def compute_summary(holdings: list[Holding]) -> PortfolioSummary:
     sector_values: dict[str, float] = {}
     for h in holdings:
         s = h.sector or "Unknown"
-        sector_values[s] = sector_values.get(s, 0) + _num(h.current_value)
+        sector_values[s] = sector_values.get(s, 0) + _cv(h)
     sector_pct = {s: round(v / total_value * 100, 2) for s, v in sector_values.items()} if total_value else {}
 
-    top = max(holdings, key=lambda h: _num(h.current_value), default=None)
+    top = max(holdings, key=lambda h: _cv(h), default=None)
 
     return PortfolioSummary(
         total_value=round(total_value, 2),

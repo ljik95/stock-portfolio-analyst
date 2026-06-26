@@ -12,7 +12,7 @@ from app.core.security import (
 )
 from app.models.schemas import PortfolioOut, PortfolioWithSummary, HoldingOut, PortfolioValueHistory
 from app.services import portfolio as portfolio_svc
-from app.services.market_data import get_price_history, get_portfolio_value_history
+from app.services.market_data import get_price_history, get_portfolio_value_history, get_current_prices
 
 router = APIRouter(prefix="/portfolio", tags=["portfolio"])
 
@@ -44,6 +44,32 @@ async def import_portfolio(
     return {"token": token, "portfolio_id": str(portfolio.id), "name": portfolio.name}
 
 
+async def _live_prices_for_holdings(holdings) -> dict[str, float]:
+    """
+    Fetch current market prices for all non-option holdings.
+    Returns {original_ticker: price_in_usd}.  Never raises — worst case is {}.
+    """
+    non_options = [h for h in holdings if h.asset_type != "option" and h.quantity]
+    if not non_options:
+        return {}
+
+    # Crypto needs a -USD suffix on Yahoo Finance; everything else uses the raw ticker.
+    yahoo_map: dict[str, str] = {
+        h.ticker: (f"{h.ticker}-USD" if h.asset_type == "crypto" else h.ticker)
+        for h in non_options
+    }
+    try:
+        prices_raw = await get_current_prices(list(yahoo_map.values()))
+    except Exception:
+        return {}
+
+    return {
+        ticker: prices_raw[symbol]
+        for ticker, symbol in yahoo_map.items()
+        if prices_raw.get(symbol) is not None
+    }
+
+
 @router.get("/me", response_model=PortfolioWithSummary, summary="Get current portfolio with summary metrics")
 async def get_portfolio(
     portfolio_id: str = Depends(get_current_portfolio_id),
@@ -54,7 +80,12 @@ async def get_portfolio(
         raise HTTPException(status_code=404, detail="Portfolio not found")
 
     holdings = await portfolio_svc.get_holdings(db, UUID(portfolio_id))
-    summary  = portfolio_svc.compute_summary(holdings)
+
+    # Fetch live prices so the summary always reflects today's market value,
+    # not the snapshot stored at CSV-import time.
+    live_prices = await _live_prices_for_holdings(holdings)
+
+    summary  = portfolio_svc.compute_summary(holdings, live_prices=live_prices)
     insights = portfolio_svc.compute_insights(holdings, summary)
 
     return PortfolioWithSummary(

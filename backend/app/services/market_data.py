@@ -182,34 +182,63 @@ def _safe(value: Any) -> float:
 # ─── Ticker metadata (sector, industry, name) ────────────────────────────────
 
 async def get_ticker_info(ticker: str) -> dict[str, Any]:
-    if ticker in INFO_CACHE:
-        return INFO_CACHE[ticker]
+    cached = INFO_CACHE.get(ticker)
+    # Only use the cache if we previously got useful metadata (sector or name).
+    # Don't permanently cache failed/empty responses — let them retry so that
+    # a transient yfinance hiccup at import time doesn't freeze sector data as
+    # "Unknown" forever.
+    if cached and (cached.get("sector") or cached.get("name")):
+        return cached
 
     loop = asyncio.get_event_loop()
     info = await loop.run_in_executor(None, _fetch_info_sync, ticker)
-    INFO_CACHE[ticker] = info
+    if info.get("sector") or info.get("name"):
+        INFO_CACHE[ticker] = info
     return info
 
 
 def _fetch_info_sync(ticker: str) -> dict:
+    """
+    Fetch ticker metadata from yfinance.
+
+    Newer yfinance versions (0.2.x+) changed the `.info` property to sometimes
+    return an empty dict without raising.  We try `get_info()` first (the
+    explicit method call is more reliable), then fall back to the `.info`
+    property, so we get sector data in as many cases as possible.
+    """
+    base = {"ticker": ticker}
     try:
         t = yf.Ticker(ticker)
-        info = t.info or {}
+
+        info: dict = {}
+        # Prefer the explicit method; fall back to the property.
+        try:
+            info = t.get_info() or {}
+        except Exception:
+            try:
+                info = t.info or {}
+            except Exception:
+                pass
+
+        if not info:
+            return base
+
         return {
-            "ticker":        ticker,
-            "name":          info.get("shortName") or info.get("longName"),
-            "sector":        info.get("sector"),
-            "industry":      info.get("industry"),
-            "market_cap":    info.get("marketCap"),
-            "pe_ratio":      info.get("trailingPE"),
-            "dividend_yield": info.get("dividendYield"),
-            "beta":          info.get("beta"),
+            "ticker":              ticker,
+            "name":                info.get("shortName") or info.get("longName"),
+            # "sectorDisp" is the display name used in some yfinance versions
+            "sector":              info.get("sector") or info.get("sectorDisp"),
+            "industry":            info.get("industry"),
+            "market_cap":          info.get("marketCap"),
+            "pe_ratio":            info.get("trailingPE"),
+            "dividend_yield":      info.get("dividendYield"),
+            "beta":                info.get("beta"),
             "fifty_two_week_high": info.get("fiftyTwoWeekHigh"),
             "fifty_two_week_low":  info.get("fiftyTwoWeekLow"),
-            "description":   (info.get("longBusinessSummary") or "")[:500],
+            "description":         (info.get("longBusinessSummary") or "")[:500],
         }
     except Exception:
-        return {"ticker": ticker}
+        return base
 
 
 # ─── Portfolio enrichment ────────────────────────────────────────────────────
