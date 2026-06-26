@@ -59,6 +59,16 @@ COLUMN_MAP = {
     "purchase date":     "purchased_at",
     "open date":         "purchased_at",
     "created at":        "purchased_at",
+
+    # asset / security type — used to detect options whose underlying
+    # ticker is short (e.g. "NOW"), which _infer_asset_type can't catch
+    # from ticker length alone
+    "type":              "type_raw",
+    "security type":     "type_raw",
+    "instrument type":   "type_raw",
+    "asset class":       "type_raw",
+    "asset type":        "type_raw",
+    "option type":       "type_raw",
 }
 
 
@@ -128,8 +138,10 @@ def parse_robinhood_csv(content: bytes) -> list[dict[str, Any]]:
 
     holdings = []
     for _, row in df.iterrows():
+        ticker   = str(row["ticker"]).upper().strip()
+        type_raw = str(row.get("type_raw", "") or "").strip()
         holdings.append({
-            "ticker":        str(row["ticker"]).upper().strip(),
+            "ticker":        ticker,
             "name":          str(row.get("name", "")) or None,
             "quantity":      _safe_float(row.get("quantity")),
             "average_cost":  _safe_float(row.get("average_cost")),
@@ -137,7 +149,7 @@ def parse_robinhood_csv(content: bytes) -> list[dict[str, Any]]:
             "current_value": _safe_float(row.get("current_value")),
             "total_return":  _safe_float(row.get("total_return")),
             "return_pct":    _safe_float(row.get("return_pct")),
-            "asset_type":    _infer_asset_type(str(row["ticker"])),
+            "asset_type":    _infer_asset_type(ticker, type_raw),
             "purchased_at":  _safe_date(row.get("purchased_at")),
         })
 
@@ -167,12 +179,32 @@ def _safe_date(value: Any) -> date | None:
         return None
 
 
-def _infer_asset_type(ticker: str) -> str:
-    """Best-effort asset type from ticker format."""
+CRYPTO_TICKERS = {
+    "BTC", "ETH", "DOGE", "SOL", "AVAX", "MATIC", "LTC", "XRP",
+    "ADA", "DOT", "SHIB", "LINK", "UNI", "ATOM", "FIL",
+}
+
+
+def _infer_asset_type(ticker: str, type_raw: str = "") -> str:
+    """
+    Determine asset type.
+
+    Priority:
+    1. Explicit type column from the CSV (most reliable when present).
+    2. OCC-symbol length heuristic (> 5 chars → option).
+    3. Known crypto tickers.
+    4. Default to "stock".
+    """
+    if type_raw:
+        tl = type_raw.lower()
+        if any(k in tl for k in ("call", "put", "option")):
+            return "option"
+        if any(k in tl for k in ("crypto", "coin", "token")):
+            return "crypto"
+
     t = ticker.upper()
     if len(t) > 5:
         return "option"
-    if t in ("BTC", "ETH", "DOGE", "SOL", "AVAX", "MATIC"):
+    if t in CRYPTO_TICKERS:
         return "crypto"
-    # Common ETF suffixes are just regular tickers; yfinance will clarify later
     return "stock"

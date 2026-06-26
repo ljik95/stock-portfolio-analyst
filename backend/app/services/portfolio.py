@@ -225,14 +225,25 @@ def compute_insights(holdings: list[Holding], summary: PortfolioSummary) -> list
             ))
 
     # ── Missing cost basis ──────────────────────────────────────────────────
-    missing_cost = [h.ticker for h in holdings if not _num(h.average_cost) and _num(h.quantity)]
+    # Options rarely carry a per-share cost basis in broker exports — exclude
+    # them to avoid noise (e.g. "NOW, NOW, NOW" for three NOW option contracts).
+    missing_cost = [
+        h.ticker for h in holdings
+        if not _num(h.average_cost) and _num(h.quantity) and h.asset_type != "option"
+    ]
     if missing_cost:
-        names = ", ".join(missing_cost[:3]) + ("…" if len(missing_cost) > 3 else "")
+        # Deduplicate while preserving order (same ticker can appear as multiple lots)
+        seen: set[str] = set()
+        unique_tickers = [t for t in missing_cost if not (t in seen or seen.add(t))]  # type: ignore[func-returns-value]
+        names   = ", ".join(unique_tickers[:3]) + ("…" if len(unique_tickers) > 3 else "")
+        plural  = len(unique_tickers) > 1
+        verb    = "don't" if plural else "doesn't"
+        pronoun = "they're" if plural else "it's"
         insights.append(Insight(
             severity="info",
-            title=f"{len(missing_cost)} holding(s) are missing a cost basis",
+            title=f"{len(unique_tickers)} position(s) are missing a cost basis",
             detail=(
-                f"{names} don't have an average cost on file, so they're excluded from "
+                f"{names} {verb} have an average cost on file, so {pronoun} excluded from "
                 f"your total return calculation. Returns shown may understate your real gains/losses."
             ),
         ))
